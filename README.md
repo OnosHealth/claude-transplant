@@ -263,6 +263,7 @@ Active identity comes from the newest complete initialization entry in Claude De
 | Delete the source | Removes the rollback |
 | Merge sidecars across versions | Requires writing a new generation |
 | Extend per-field replay omission lists | Claude Code changes which fields it blanks. A complete existing copy must cover every filled tool-result value instead |
+| Lock runs with `/usr/bin/lockf` | macOS 14.5 (23F79) does not ship it, every run failed with `spawn /usr/bin/lockf ENOENT`. A lock directory created with `mkdir` is atomic without a helper binary, a stored pid lets the next run reclaim it after a crash |
 | Treat replay bookkeeping as changed content | Claude Code 2.1.286 replayed identical content with zeroed token usage and missing producer markers, blocking a notification conversation and its task family. Verified with Desktop 2.26454.0 on 2026-10-07 |
 | Rely only on cached conversation hashes | They omit subagent files and queued-prompt delivery evidence. Supplemental checks read the linked session's artifacts |
 | Move a record while its Desktop worker runs | Desktop rewrites the record from cache, title and turn count roll back |
@@ -297,4 +298,4 @@ Active identity comes from the newest complete initialization entry in Claude De
 | 4.0.4 | 27.0 | 1.46388.4 | 2.1.260 | 2026-09-08 |
 | 4.0.3 | 27.0 | 1.46388.4 | 2.1.260 | 2026-09-07 |
 
-Receipts, quarantine, drift evidence, cache, and the menubar app live in `~/Library/Application Support/claude-transplant`. Delete `quarantine` once its receipts are no longer wanted. A kernel lock prevents overlapping runs. MIT.
+Receipts, quarantine, drift evidence, cache, and the menubar app live in `~/Library/Application Support/claude-transplant`. Delete `quarantine` once its receipts are no longer wanted. A lock directory prevents overlapping runs and is reclaimed once the run that made it is gone. MIT.

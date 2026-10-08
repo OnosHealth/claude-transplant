@@ -646,12 +646,6 @@ test('automatic retries never request a restart and leave held workers alone', a
   assert.ok(await readFile(path.join(h.dir('P'), `local_${SOURCE}.json`)))
 })
 
-async function hold(file) {
-  const guard = spawn('/usr/bin/lockf', ['-k', '-t', '0', file, '/bin/sh', '-c', 'printf ready; cat >/dev/null'], { stdio: ['pipe', 'pipe', 'pipe'] })
-  await once(guard.stdout, 'data')
-  return guard
-}
-
 async function duringSecondRead(file, text, action) {
   const first = await open(file, 'w')
   await first.writeFile(text)
@@ -1050,22 +1044,35 @@ test('human CLI reports Finish recovery without an undefined pending count', asy
   assert.doesNotMatch(result.stdout, /undefined cloud checks/)
 })
 
-test('a second move cannot cross the kernel lock', async () => {
+test('a second move cannot cross the lock directory', async () => {
   const h = await home()
   await h.write(id(999), [entry('user', 999, null, id(999))])
   await h.record('P', id(999))
-  await mkdir(h.paths.state, { recursive: true })
-  const guard = await hold(path.join(h.paths.state, 'lock'))
+  const lockDir = path.join(h.paths.state, 'lock.d')
+  await mkdir(lockDir, { recursive: true })
   try {
-    const result = await cli(h.root, ['--from', 'p@example.com', '--to', 'z@example.com', '--json'])
-    assert.equal(result.code, 1)
-    assert.match(result.stderr, /another run holds the lock/)
-    assert.equal((await readdir(h.dir('Z'))).length, 0)
+    for (const pid of [null, process.pid]) {
+      if (pid) await mkdir(path.join(lockDir, String(pid)))
+      const result = await cli(h.root, ['--from', 'p@example.com', '--to', 'z@example.com', '--json'])
+      assert.equal(result.code, 1)
+      assert.match(result.stderr, /another run holds the lock/)
+      assert.equal(JSON.parse(result.stdout.trim().split('\n').at(-1)).code, 'LOCK_BUSY')
+      assert.equal((await readdir(h.dir('Z'))).length, 0)
+    }
   } finally {
-    const exited = once(guard, 'exit')
-    guard.stdin.end()
-    await exited
+    await fs.rm(lockDir, { recursive: true, force: true })
   }
+})
+
+test('a lock directory left by a dead run is reclaimed', async () => {
+  const h = await home()
+  const lockDir = path.join(h.paths.state, 'lock.d')
+  await mkdir(lockDir, { recursive: true })
+  const dead = spawn(process.execPath, ['-e', ''], { stdio: 'ignore' })
+  await once(dead, 'exit')
+  await mkdir(path.join(lockDir, String(dead.pid)))
+  assert.deepEqual((await verifyPlaced(h.paths)).changed, [])
+  assert.equal(await stat(lockDir).catch(() => null), null)
 })
 
 test('a non-Claude process mentioning a session id is not a worker', async () => {
