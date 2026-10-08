@@ -634,23 +634,24 @@ async function quarantine(items, dest) {
   }
 }
 
+const processAlive = (pid) => { try { return process.kill(pid, 0) } catch (error) { return error.code !== 'ESRCH' } }
+
 async function locked(paths, work) {
   await mkdir(paths.state, { recursive: true })
-  const lockFile = path.join(paths.state, 'lock')
-  const guard = spawn('/usr/bin/lockf', ['-k', '-s', '-w', '-t', '0', lockFile, '/bin/sh', '-c', 'printf ready; cat >/dev/null'], { stdio: ['pipe', 'pipe', 'pipe'] })
-  await new Promise((resolve, reject) => {
-    let ready = false
-    guard.stdout.once('data', () => { ready = true; resolve() })
-    guard.once('error', reject)
-    guard.once('exit', (code) => {
-      if (!ready) reject(Object.assign(new Error(code === 75 ? 'another run holds the lock' : `lockf failed, exit ${code ?? 'unknown'}`), { code: code === 75 ? 'LOCK_BUSY' : 'LOCK_FAILED' }))
-    })
-  })
+  const lockDir = path.join(paths.state, 'lock.d'), owner = path.join(lockDir, String(process.pid))
+  const refuse = () => { throw Object.assign(new Error(`another run holds the lock (delete ${lockDir} if no run is active)`), { code: 'LOCK_BUSY' }) }
+  const created = await mkdir(lockDir).then(() => true, (error) => { if (error.code !== 'EEXIST') throw error; return false })
+  if (!created) {
+    const holder = (await readdir(lockDir).catch(() => []))[0]
+    if (holder === undefined || processAlive(Number(holder))) refuse()
+    await rmdir(path.join(lockDir, holder)).catch(refuse)
+  }
+  await mkdir(owner).catch(async (error) => { if (created) await rmdir(lockDir).catch(() => {}); throw error })
   try {
     return await work()
   } finally {
-    guard.stdin.end()
-    if (guard.exitCode === null) await new Promise((resolve) => guard.once('exit', resolve))
+    await rmdir(owner).catch(() => {})
+    await rmdir(lockDir).catch(() => {})
   }
 }
 
