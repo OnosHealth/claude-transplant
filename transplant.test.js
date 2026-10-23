@@ -632,6 +632,53 @@ test('placed verification ignores activity and bridge registration but records t
   assert.equal((await verifyPlaced(h.paths)).changed[0].found, changed.changed[0].found)
 })
 
+const mcpHeavy = () => ({ remoteMcpServersConfig: [{ name: 'fixture', tools: Array.from({ length: 50 }, (_, i) => ({ name: `tool${i}`, inputSchema: { description: 'x'.repeat(6000) } })) }] })
+
+test('receipts keep a small record snapshot when Desktop records carry large MCP tool lists', async () => {
+  const h = await home()
+  await h.write(SOURCE, [entry('user', 1, null, SOURCE)])
+  await h.record('P', SOURCE, rehomeRecord(mcpHeavy()))
+  const all = await accounts(h.paths), from = all.find((row) => row.account === h.acct.P), to = all.find((row) => row.account === h.acct.T)
+  const result = await move(await inventory([from], to, h.paths), to, h.paths)
+  assert.equal(result.receipt.sessions.length, 1)
+  const file = result.receipt.sessions[0].record
+  assert.ok(JSON.parse(await readFile(file)).remoteMcpServersConfig, 'placed record keeps its MCP config')
+  const receiptText = await readFile(result.file, 'utf8')
+  assert.ok(receiptText.length < 50_000, `Receipt carries the full Desktop record: ${receiptText.length}`)
+  const snapshot = JSON.parse(receiptText).sessions[0].recordSnapshot
+  assert.equal(snapshot.remoteMcpServersConfig, undefined)
+  assert.equal(snapshot.cliSessionId, SOURCE)
+  const record = JSON.parse(await readFile(file))
+  record.title = 'Renamed after placement'
+  await writeFile(file, JSON.stringify(record))
+  const changed = await verifyPlaced(h.paths)
+  assert.deepEqual(changed.changed.map((row) => row.fields), [['title']])
+})
+
+test('older receipts with full record snapshots in a journal still load and are slimmed', async () => {
+  const h = await home()
+  await h.write(SOURCE, [entry('user', 1, null, SOURCE)])
+  await h.record('P', SOURCE, rehomeRecord(mcpHeavy()))
+  const all = await accounts(h.paths), from = all.find((row) => row.account === h.acct.P), to = all.find((row) => row.account === h.acct.T)
+  const result = await move(await inventory([from], to, h.paths), to, h.paths)
+  const file = result.receipt.sessions[0].record
+  const receipt = JSON.parse(await readFile(result.file, 'utf8'))
+  const row = { ...receipt.sessions[0], recordSnapshot: JSON.parse(await readFile(file)) }
+  const sequence = receipt.journalSequence ?? 0
+  receipt.sessions = []
+  await writeFile(result.file, JSON.stringify(receipt))
+  await writeFile(`${result.file}.journal`, `${JSON.stringify({ sequence: sequence + 1, pending: null, sessions: [row], failed: [], retained: [] })}\n{"sequence":`)
+  const record = JSON.parse(await readFile(file))
+  record.isStarred = true
+  await writeFile(file, JSON.stringify(record))
+  const changed = await verifyPlaced(h.paths)
+  assert.deepEqual(changed.changed.map((row) => row.fields), [['isStarred']])
+  const saved = JSON.parse(await readFile(result.file, 'utf8'))
+  assert.equal(saved.sessions.length, 1)
+  assert.equal(saved.sessions[0].recordSnapshot.remoteMcpServersConfig, undefined)
+  assert.equal(JSON.parse(await readFile(changed.changed[0].placed)).remoteMcpServersConfig, undefined)
+})
+
 test('automatic retries never request a restart and leave held workers alone', async () => {
   const h = await home()
   await h.write(SOURCE, [entry('user', 1, null, SOURCE)])
