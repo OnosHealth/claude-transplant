@@ -33,6 +33,8 @@ const RESTART_LOG_BYTES = 1024 * 1024
 const RUNTIME_KEYS = ['slug', 'promptId', 'parentUuid', 'version', 'cwd', 'gitBranch']
 const MESSAGE_RUNTIME_KEYS = ['id', 'usage', 'diagnostics', 'stop_reason', 'stop_sequence', 'stop_details']
 const RECORD_RUNTIME_KEYS = ['lastActivityAt', 'lastFocusedAt', 'completedTurns', 'error', 'errorAt', 'priorErrorMark', 'lastSpawnRootDetected', 'promptAppendSnapshot', 'reportFindingsCard', 'scratchPromptRecents', 'writtenBranches', 'prs']
+const SNAPSHOT_KEYS = ['sessionId', 'cliSessionId', 'cwd', 'originCwd', 'title', 'isArchived', 'isStarred']
+const snapshotOf = (record) => record && typeof record === 'object' ? Object.fromEntries(SNAPSHOT_KEYS.filter((key) => Object.hasOwn(record, key)).map((key) => [key, record[key]])) : record
 const REMOTE_TAGS = new Set(['remote-control-sdk', 'remote-control-repl'])
 const HELP = `claude-transplant   move Claude Code history between accounts
 
@@ -2111,7 +2113,7 @@ async function rehomeOne(s, to, journal, guard) {
     targetDir: sourceSidecars.count ? path.join(path.dirname(s.transcript), s.id) : null,
     record,
     recordSha,
-    recordSnapshot: placed,
+    recordSnapshot: snapshotOf(placed),
     recordSemantic: recordSemantic(placed),
     targetRecordId: current.sessionId,
     taskFile: to.taskFile,
@@ -2414,14 +2416,34 @@ const saveText = async (file, text, before = () => {}) => {
 
 const saveJson = (file, value, spacing = 2) => saveText(file, jsonText(value, spacing))
 
+async function* journalLines(file) {
+  let rest = Buffer.alloc(0)
+  try {
+    for await (const chunk of createReadStream(file)) {
+      let data = rest.length ? Buffer.concat([rest, chunk]) : chunk, start = 0, end
+      while ((end = data.indexOf(10, start)) !== -1) {
+        yield data.toString('utf8', start, end)
+        start = end + 1
+      }
+      rest = data.subarray(start)
+    }
+  } catch (error) {
+    if (error.code === 'ENOENT') return
+    throw error
+  }
+}
+
+const slimSessions = (rows) => {
+  if (Array.isArray(rows)) for (const row of rows) if (row?.recordSnapshot) row.recordSnapshot = snapshotOf(row.recordSnapshot)
+  return rows
+}
+
 async function readReceipt(file) {
   const receipt = await readJson(file)
-  const text = await readFile(`${file}.journal`, 'utf8').catch((error) => {
-    if (error.code === 'ENOENT') return ''
-    throw error
-  })
-  for (const line of text.split('\n').slice(0, -1)) {
+  slimSessions(receipt.sessions)
+  for await (const line of journalLines(`${file}.journal`)) {
     const patch = JSON.parse(line)
+    slimSessions(patch.sessions)
     if (!Number.isSafeInteger(patch.sequence) || patch.sequence < 1) throw new Error('Invalid move journal sequence')
     if (patch.sequence <= (receipt.journalSequence ?? 0)) continue
     if (patch.sequence !== (receipt.journalSequence ?? 0) + 1) throw new Error('Incomplete move journal')
@@ -3280,7 +3302,7 @@ async function rescueRemote(match, to, cloud, journal) {
     targetDir: null,
     record,
     recordSha: sha(recordText),
-    recordSnapshot: placed,
+    recordSnapshot: snapshotOf(placed),
     recordSemantic: recordSemantic(placed),
     targetRecordId: placed.sessionId,
     taskFile: to.taskFile,
@@ -3337,7 +3359,7 @@ async function applyActivation(activation, row) {
   await saveText(activation.record, jsonText(activation.after))
   if (sha(await readFile(activation.record)) !== activation.afterSha) throw new Error('local target activation verification failed')
   row.recordSha = activation.afterSha
-  row.recordSnapshot = structuredClone(activation.after)
+  row.recordSnapshot = snapshotOf(activation.after)
   row.recordSemantic = activation.afterSemantic
   row.archived = false
   if (row.session) {
@@ -3386,7 +3408,7 @@ async function rollbackActivation(activation, row = null) {
   if (semantic === activation.afterSemantic) await saveText(activation.record, text)
   if (row) {
     row.recordSha = sha(text)
-    row.recordSnapshot = structuredClone(restored)
+    row.recordSnapshot = snapshotOf(restored)
     row.recordSemantic = recordSemantic(restored)
     row.archived = true
     if (row.session) {
